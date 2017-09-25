@@ -168,25 +168,25 @@ def pythonpredicate(expr):
             return expr
     return prependself(ast.parse(expr).body[0].value)
 
-def pythoninit(name, inits):
+def pythoninit(inits):
     def setbase(init):
         out = None
         for predicate, consequent in reversed(init.predicates):
             if predicate is None:
                 assert out is None
-                out = ast.parse("self.base{0} = self.base{1} + {2}".format(init.base, consequent.base, consequent.end)).body[0]
+                out = ast.parse("self._base{0} = self._base{1} + {2}".format(init.base, consequent.base, consequent.end)).body[0]
             else:
-                tmp = ast.parse("if REPLACEME:\n  self.base{0} = self.base{1} + {2}\nelse:  REPLACEME".format(init.base, consequent.base, consequent.end)).body[0]
+                tmp = ast.parse("if REPLACEME:\n  self._base{0} = self._base{1} + {2}\nelse:  REPLACEME".format(init.base, consequent.base, consequent.end)).body[0]
                 tmp.test = pythonpredicate(predicate)
                 tmp.orelse = [out]
                 out = tmp
         return out
 
-    out = ast.parse("def __init__(self, file, base0):\n  super({0}, self).__init__(file, base0)".format(name)).body[0]
-    out.body.extend([setbase(x) for x in inits])
+    out = ast.parse("def __init__(self, file, base0):\n  ObjectInFile.__init__(self, file, base0)")
+    out.body[0].body.extend([setbase(x) for x in inits])
     return out
 
-def pythonprop(name, prop):
+def pythonprop(prop):
     readers = {}
     def recurse(prop):
         if isinstance(prop, Where):
@@ -198,7 +198,7 @@ def pythonprop(name, prop):
             if not found:
                 rn = "reader{0}".format(len(readers))
                 readers[rn] = prop.reader
-            return ast.parse("return {0}.read(self._file, self._base{1} + {2})".format(rn, prop.base, prop.start))
+            return ast.parse("return {0}.read(self._file, self._base{1} + {2})".format(rn, prop.base, prop.start)).body[0]
 
         elif isinstance(prop, Split):
             out = None
@@ -214,8 +214,8 @@ def pythonprop(name, prop):
                     out = tmp
             return out
 
-    out = ast.parse("def {0}(self):\n  REPLACEME".format(name)).body[0]
-    out.body = [recurse(prop)]
+    out = ast.parse("def PROPERTY(self):\n  REPLACEME")
+    out.body[0].body = [recurse(prop)]
     return out, readers
 
 class ObjectInFile(object):
@@ -223,51 +223,44 @@ class ObjectInFile(object):
         self._file = file
         self._base0 = base0
 
-import meta
+def declare(classname, specification, debug=False):
+    inits = []
+    fields, after = expandifs(specification[classname]["properties"], 0, 0, inits)
+
+    source = pythoninit(inits)
+    env = {"ObjectInFile": ObjectInFile}
+    if debug:
+        import meta
+        meta.dump_python_source(source)
+    exec(compile(source, "<auto>", "exec"), env)
+    methods = {"__init__": env["__init__"]}
+
+    for name, prop in fields.items():
+        source, env = pythonprop(prop)
+        if debug:
+            import meta
+            print(meta.dump_python_source(source))
+        exec(compile(source, "<auto>", "exec"), env)
+        methods[name] = property(env["PROPERTY"])
+
+    return type(classname, (ObjectInFile,), methods)
 
 specification = yaml.load(open("specification.yaml"))
+TFile = declare("TFile", specification)
 
-inits= []
-fields, after = expandifs(specification["TFile"]["properties"], 0, 0, inits)
+file = numpy.memmap("/home/pivarski/storage/data/TrackResonanceNtuple_uncompressed.root", dtype=numpy.uint8, mode="r")
+tfile = TFile(file, 0)
 
-for name, prop in fields.items():
-    code, readers = pythonprop(name, prop)
-    print meta.dump_python_source(code)
-
-print meta.dump_python_source(pythoninit("TFile", inits))
-
-
-            
-# def declare(spec, conditions):
-#     if isinstance(spec, list):
-#         properties = {}
-#         for s in spec:
-#             properties.update(declare(s, conditions))
-#         return properties
-
-#     elif isinstance(spec, dict) and len(spec) == 1 and list(spec.keys())[0] == "if":
-        
-#     elif isinstance(spec, dict) and len(spec) == 1:
-#         (name, s), = spec.items()
-#         r = reader(s)
-#         variables = {"reader": r}
-#         exec(propfunction(name, conditions), variables)
-#         conditions.offset += r.size
-#         return {name: property(variables[name])}
-
-#     else:
-#         raise Exception
-
-# def declareclass(name, specification):
-#     return type(name, (ObjectInFile,), declare(specification[name]["properties"], Where(0, 0)))
-
-
-# TFile = declareclass("TFile", specification)
-
-# file = numpy.memmap("/home/pivarski/storage/data/TrackResonanceNtuple_uncompressed.root", dtype=numpy.uint8, mode="r")
-
-# tfile = TFile(file, 0)
-
-# print tfile.magic
-# print tfile.version
-# print tfile.begin
+print "magic", tfile.magic
+print "version", tfile.version
+print "begin", tfile.begin
+print "end", tfile.end
+print "seekfree", tfile.seekfree
+print "nbytesfree", tfile.nbytesfree
+print "nfree", tfile.nfree
+print "nbytesname", tfile.nbytesname
+print "units", tfile.units
+print "compression", tfile.compression
+print "seekinfo", tfile.seekinfo
+print "nbytesinfo", tfile.nbytesinfo
+print "uuid", repr(tfile.uuid)
