@@ -20,6 +20,7 @@ import struct
 import numpy
 import yaml
 from collections import namedtuple
+from collections import OrderedDict
 from types import MethodType
 
 from zlib import decompress as zlib_decompress
@@ -37,7 +38,7 @@ class FixedWidth(struct.Struct):
 
     def __call__(self, file, index):
         return self.unpack(file[index:index + self.size])[0]
-
+    
 class PascalString(object):
     def __repr__(self):
         return "PascalString()"
@@ -144,9 +145,10 @@ def expandifs(spec, base, offset, inits):
                 names.update(thisfields)
                 init.append((predicate, thisafter))
             
-            base += 1
-            offset = 0
-            inits.append(Init(base, init))
+            if itemindex + 1 != len(spec):
+                base += 1
+                offset = 0
+                inits.append(Init(base, init))
 
         else:
             (name, format), = item.items()
@@ -165,8 +167,8 @@ def expandifs(spec, base, offset, inits):
 
             if hasattr(r, "size"):
                 offset += r.size
-            else:
-                inits.append(Init(base, AfterSize(base, offset, r)))
+            elif itemindex + 1 != len(spec):
+                inits.append(Init(base + 1, AfterSize(base, offset, r)))
                 base += 1
                 offset = 0
 
@@ -262,15 +264,29 @@ class Cursor(object):
     def _sizeof(cls, file, pos):
         return 0
 
+    @classmethod
+    def _printsource(cls, method=None):
+        import meta
+        if method is not None:
+            source = cls._source[method][0]
+            source.body[0].name = "{0}.{1}".format(cls.__name__, method)
+            print(meta.dump_python_source(source))
+
+        else:
+            out = "class {0}(Cursor):".format(cls.__name__)
+            for method, (source, readers) in cls._source.items():
+                source.body[0].name = method
+                out += meta.dump_python_source(source).replace("\n", "\n    ").rstrip() + "\n"
+            print(out)
+
 def declareclass(classname, spec):
     inits = []
     fields, after = expandifs(spec["properties"], 0, 0, inits)
 
     out = type(classname, (Cursor,), {})
-    out.__init = pythoninit(inits)
-    out.__properties = {}
+    out._source = OrderedDict([("__init__", (pythoninit(inits), None))])
     for name, prop in fields.items():
-        out.__properties[name] = pythonprop(prop)
+        out._source[name] = pythonprop(prop)
     return out
 
 def declare(specification):
@@ -281,15 +297,15 @@ def declare(specification):
     for cls in classes.values():
         env = classes.copy()
         env["Cursor"] = Cursor
-        exec(compile(cls.__init, "<auto>", "exec"), env)
+        exec(compile(cls._source["__init__"][0], "<auto>", "exec"), env)
         cls.__init__ = MethodType(env["__init__"], None, cls)
 
-        for name, (source, readers) in cls.__properties.items():
-            env = classes.copy()
-            env.update(readers)
-
-            exec(compile(source, "<auto>", "exec"), env)
-            setattr(cls, name, property(env["PROPERTY"]))
+        for name, (source, readers) in cls._source.items():
+            if name != "__init__":
+                env = classes.copy()
+                env.update(readers)
+                exec(compile(source, "<auto>", "exec"), env)
+                setattr(cls, name, property(env["PROPERTY"]))
 
     return classes
 
@@ -297,7 +313,7 @@ classes = declare(yaml.load(open("specification.yaml")))
 
 file = numpy.memmap("/home/pivarski/storage/data/TrackResonanceNtuple_uncompressed.root", dtype=numpy.uint8, mode="r")
 tfile = classes["TFile"](file, 0)
-print "magic", tfile.magic
+print "magic", repr(tfile.magic)
 print "version", tfile.version
 print "begin", tfile.begin
 print "end", tfile.end
@@ -318,3 +334,5 @@ print "dir.nbytesname", tfile.dir.nbytesname
 print "dir.seekdir", tfile.dir.seekdir
 print "dir.seekparent", tfile.dir.seekparent
 print "dir.seekkeys", tfile.dir.seekkeys
+
+tfile._printsource()
