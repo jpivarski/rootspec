@@ -157,7 +157,7 @@ def expandifs(spec, base, offset, inits):
 def pythonpredicate(expr):
     def prependself(expr):
         if isinstance(expr, ast.Name):
-            return ast.Attribute(ast.Name("self", ast.Load()), expr.id, ast.Load())
+            return ast.parse("self.{0}".format(expr.id)).body[0].value
         elif isinstance(expr, ast.AST):
             for field in expr._fields:
                 setattr(expr, field, prependself(getattr(expr, field)))
@@ -168,18 +168,55 @@ def pythonpredicate(expr):
             return expr
     return prependself(ast.parse(expr).body[0].value)
 
-def setbase(init):
-    out = None
-    for predicate, consequent in reversed(init.predicates):
-        if predicate is None:
-            assert out is None
-            out = ast.parse("self.base{0} = self.base{1} + {2}".format(init.base, consequent.base, consequent.end)).body[0]
-        else:
-            tmp = ast.parse("if REPLACEME:\n  self.base{0} = self.base{1} + {2}\nelse:  REPLACEME".format(init.base, consequent.base, consequent.end)).body[0]
-            tmp.test = pythonpredicate(predicate)
-            tmp.orelse = [out]
-            out = tmp
+def pythoninit(name, inits):
+    def setbase(init):
+        out = None
+        for predicate, consequent in reversed(init.predicates):
+            if predicate is None:
+                assert out is None
+                out = ast.parse("self.base{0} = self.base{1} + {2}".format(init.base, consequent.base, consequent.end)).body[0]
+            else:
+                tmp = ast.parse("if REPLACEME:\n  self.base{0} = self.base{1} + {2}\nelse:  REPLACEME".format(init.base, consequent.base, consequent.end)).body[0]
+                tmp.test = pythonpredicate(predicate)
+                tmp.orelse = [out]
+                out = tmp
+        return out
+
+    out = ast.parse("def __init__(self, file, base0):\n  super({0}, self).__init__(file, base0)".format(name)).body[0]
+    out.body.extend([setbase(x) for x in inits])
     return out
+
+def pythonprop(name, prop):
+    readers = {}
+    def recurse(prop):
+        if isinstance(prop, Where):
+            found = False
+            for rn, r in readers.items():
+                if r is prop.reader:
+                    found = True
+                    break
+            if not found:
+                rn = "reader{0}".format(len(readers))
+                readers[rn] = prop.reader
+            return ast.parse("return {0}.read(self._file, self._base{1} + {2})".format(rn, prop.base, prop.start))
+
+        elif isinstance(prop, Split):
+            out = None
+            for predicate, consequent in reversed(prop.predicates):
+                if predicate is None:
+                    assert out is None
+                    out = recurse(consequent)
+                else:
+                    tmp = ast.parse("if REPLACEME:\n  REPLACEME\nelse:\n  REPLACEME").body[0]
+                    tmp.test = pythonpredicate(predicate)
+                    tmp.body = [recurse(consequent)]
+                    tmp.orelse = [out]
+                    out = tmp
+            return out
+
+    out = ast.parse("def {0}(self):\n  REPLACEME".format(name)).body[0]
+    out.body = [recurse(prop)]
+    return out, readers
 
 class ObjectInFile(object):
     def __init__(self, file, base0):
@@ -193,10 +230,11 @@ specification = yaml.load(open("specification.yaml"))
 inits= []
 fields, after = expandifs(specification["TFile"]["properties"], 0, 0, inits)
 
-# for name, spec in fields.items():
-#     print name, spec
+for name, prop in fields.items():
+    code, readers = pythonprop(name, prop)
+    print meta.dump_python_source(code)
 
-print meta.dump_python_source(setbase(inits[0]))
+print meta.dump_python_source(pythoninit("TFile", inits))
 
 
             
