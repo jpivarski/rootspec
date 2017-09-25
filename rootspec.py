@@ -47,20 +47,21 @@ class PascalString(object):
     readbig = struct.Struct(">I")
 
     def __call__(self, file, index):
-        size, = self.readlittle(file[index:index + 1])
+        size, = self.readlittle.unpack(file[index:index + 1])
         start = index + 1
         if size == 255:
-            size, = self.readbig(file[index + 1:index + 5])
+            size, = self.readbig.unpack(file[index + 1:index + 5])
             start = index + 5
         return file[start:start + size].tostring()
 
-    # def size(self, file, index):
-    #     size, = self.readlittle(file[index:index + 1])
-    #     if size < 255:
-    #         return size + 1
-    #     else:
-    #         size, = self.readbig(file[index + 1:index + 5])
-    #         return size + 5
+    @classmethod
+    def _sizeof(cls, file, index):
+        size, = PascalString.readlittle.unpack(file[index:index + 1])
+        if size < 255:
+            return size + 1
+        else:
+            size, = PascalString.readbig.unpack(file[index + 1:index + 5])
+            return size + 5
 
 class CString(object):
     def __repr__(self):
@@ -72,11 +73,12 @@ class CString(object):
             end += 1
         return self.data[index:end].tostring()
 
-    # def size(self, file, index):
-    #     end = index
-    #     while file[end] != 0:
-    #         end += 1
-    #     return end + 1 - index
+    @classmethod
+    def _sizeof(cls, file, index):
+        end = index
+        while file[end] != 0:
+            end += 1
+        return end + 1 - index
 
 readers = {
     "bool": FixedWidth("?"),
@@ -90,8 +92,8 @@ readers = {
     "uint64": FixedWidth(">Q"),
     "float32": FixedWidth(">f"),
     "float64": FixedWidth(">d"),
-    "string": PascalString,
-    "cstring": CString}
+    "string": PascalString(),
+    "cstring": CString()}
 
 Where = namedtuple("Where", ["base", "offset", "reader"])
 Jumpto = namedtuple("Jumpto", ["expr", "reader"])
@@ -112,7 +114,7 @@ def reader(format):
 
 def expandifs(spec, base, offset, inits):
     assert isinstance(spec, list)
-    fields = {}
+    fields = OrderedDict()
     for itemindex, item in enumerate(spec):
         if set(item.keys()) == set(["if"]):
             assert isinstance(item["if"], list)
@@ -189,10 +191,24 @@ def prependself(expr):
 def pythonpredicate(expr):
     return prependself(ast.parse(expr).body[0].value)
 
+def addtoreaders(reader, readers):
+    if isinstance(reader, str):
+        return reader
+    else:
+        found = False
+        for rn, r in readers.items():
+            if r is reader:
+                return rn
+        rn = "reader{0}".format(len(readers))
+        readers[rn] = reader
+        return rn
+
 def pythoninit(inits):
+    readers = {}
     def setbase(init):
         if isinstance(init.pos, AfterSize):
-            return ast.parse("self._base{0} = {1}._sizeof(self._file, self._base{2} + {3})".format(init.base, init.pos.type, init.pos.base, init.pos.end)).body[0]
+            rn = addtoreaders(init.pos.type, readers)
+            return ast.parse("self._base{0} = self._base{1} + {2} + {3}._sizeof(self._file, self._base{1} + {2})".format(init.base, init.pos.base, init.pos.end, rn)).body[0]
 
         else:
             out = None
@@ -209,24 +225,13 @@ def pythoninit(inits):
 
     out = ast.parse("def __init__(self, file, base0):\n  Cursor.__init__(self, file, base0)")
     out.body[0].body.extend([setbase(x) for x in inits])
-    return out
+    return out, readers
 
 def pythonprop(prop):
     readers = {}
     def recurse(prop):
         if isinstance(prop, (Where, Jumpto)):
-            if isinstance(prop.reader, str):
-                rn = prop.reader
-            else:
-                found = False
-                for rn, r in readers.items():
-                    if r is prop.reader:
-                        found = True
-                        break
-                if not found:
-                    rn = "reader{0}".format(len(readers))
-                    readers[rn] = prop.reader
-
+            rn = addtoreaders(prop.reader, readers)
             if isinstance(prop, Where):
                 return ast.parse("return {0}(self._file, self._base{1} + {2})".format(rn, prop.base, prop.offset)).body[0]
             elif isinstance(prop, Jumpto):
@@ -265,26 +270,41 @@ class Cursor(object):
         return 0
 
     @classmethod
-    def _printsource(cls, method=None):
+    def _debug(cls, method=None):
         import meta
+
+        def recurse(x, readers):
+            if isinstance(x, ast.Name) and x.id in readers:
+                return ast.Name(repr(readers[x.id]), ast.Load())
+            elif isinstance(x, ast.AST):
+                for field in x._fields:
+                    setattr(x, field, recurse(getattr(x, field), readers))
+                return x
+            elif isinstance(x, list):
+                return [recurse(y, readers) for y in x]
+            else:
+                return x
+
         if method is not None:
-            source = cls._source[method][0]
+            source, readers = cls._source[method]
+            recurse(source, readers)
             source.body[0].name = "{0}.{1}".format(cls.__name__, method)
-            print(meta.dump_python_source(source))
+            return meta.dump_python_source(source)
 
         else:
             out = "class {0}(Cursor):".format(cls.__name__)
             for method, (source, readers) in cls._source.items():
+                recurse(source, readers)
                 source.body[0].name = method
                 out += meta.dump_python_source(source).replace("\n", "\n    ").rstrip() + "\n"
-            print(out)
+            return out
 
 def declareclass(classname, spec):
     inits = []
     fields, after = expandifs(spec["properties"], 0, 0, inits)
 
     out = type(classname, (Cursor,), {})
-    out._source = OrderedDict([("__init__", (pythoninit(inits), None))])
+    out._source = OrderedDict([("__init__", pythoninit(inits))])
     for name, prop in fields.items():
         out._source[name] = pythonprop(prop)
     return out
@@ -295,16 +315,15 @@ def declare(specification):
         classes[name] = declareclass(name, spec)
 
     for cls in classes.values():
-        env = classes.copy()
-        env["Cursor"] = Cursor
-        exec(compile(cls._source["__init__"][0], "<auto>", "exec"), env)
-        cls.__init__ = MethodType(env["__init__"], None, cls)
-
         for name, (source, readers) in cls._source.items():
-            if name != "__init__":
-                env = classes.copy()
-                env.update(readers)
-                exec(compile(source, "<auto>", "exec"), env)
+            env = {"Cursor": Cursor}
+            env.update(classes)
+            env.update(readers)
+            exec(compile(source, "<auto>", "exec"), env)
+
+            if name == "__init__":
+                setattr(cls, name, MethodType(env["__init__"], None, cls))
+            else:
                 setattr(cls, name, property(env["PROPERTY"]))
 
     return classes
@@ -313,26 +332,41 @@ classes = declare(yaml.load(open("specification.yaml")))
 
 file = numpy.memmap("/home/pivarski/storage/data/TrackResonanceNtuple_uncompressed.root", dtype=numpy.uint8, mode="r")
 tfile = classes["TFile"](file, 0)
-print "magic", repr(tfile.magic)
-print "version", tfile.version
-print "begin", tfile.begin
-print "end", tfile.end
-print "seekfree", tfile.seekfree
-print "nbytesfree", tfile.nbytesfree
-print "nfree", tfile.nfree
-print "nbytesname", tfile.nbytesname
-print "units", tfile.units
-print "compression", tfile.compression
-print "seekinfo", tfile.seekinfo
-print "nbytesinfo", tfile.nbytesinfo
-print "uuid", repr(tfile.uuid)
-print "dir.version", tfile.dir.version
-print "dir.ctime", tfile.dir.ctime
-print "dir.mtime", tfile.dir.mtime
-print "dir.nbyteskeys", tfile.dir.nbyteskeys
-print "dir.nbytesname", tfile.dir.nbytesname
-print "dir.seekdir", tfile.dir.seekdir
-print "dir.seekparent", tfile.dir.seekparent
-print "dir.seekkeys", tfile.dir.seekkeys
+print "tfile.magic", repr(tfile.magic)
+print "tfile.version", tfile.version
+print "tfile.begin", tfile.begin
+print "tfile.end", tfile.end
+print "tfile.seekfree", tfile.seekfree
+print "tfile.nbytesfree", tfile.nbytesfree
+print "tfile.nfree", tfile.nfree
+print "tfile.nbytesname", tfile.nbytesname
+print "tfile.units", tfile.units
+print "tfile.compression", tfile.compression
+print "tfile.seekinfo", tfile.seekinfo
+print "tfile.nbytesinfo", tfile.nbytesinfo
+print "tfile.uuid", repr(tfile.uuid)
 
-tfile._printsource()
+tdirectory = tfile.dir
+print "tdirectory.version", tdirectory.version
+print "tdirectory.ctime", tdirectory.ctime
+print "tdirectory.mtime", tdirectory.mtime
+print "tdirectory.nbyteskeys", tdirectory.nbyteskeys
+print "tdirectory.nbytesname", tdirectory.nbytesname
+print "tdirectory.seekdir", tdirectory.seekdir
+print "tdirectory.seekparent", tdirectory.seekparent
+print "tdirectory.seekkeys", tdirectory.seekkeys
+
+print classes["TKey"]._debug()
+
+header = tdirectory.keys.header
+print "header.bytes", header.bytes
+print "header.version", header.version
+print "header.objlen", header.objlen
+print "header.datetime", header.datetime
+print "header.keylen", header.keylen
+print "header.cycle", header.cycle
+print "header.seekkey", header.seekkey
+print "header.seekpdir", header.seekpdir
+print "header.classname", repr(header.classname)
+print "header.name", repr(header.name)
+print "header.title", repr(header.title)

@@ -66,37 +66,35 @@ TDirectory:
             - seekdir: int64
             - seekparent: int64
             - seekkeys: int64
-    # - keys:
-    #     type: TKeys
-    #     at: seekkeys
+    - keys:
+        type: TKeys
+        at: seekkeys
 
-# TKeys:
-#   doc: A "pseudoclass" for a header TKey followed by a list of TKeys.
-#   properties:
-#     - header: TKey
-#     - nkeys:
-#         type: int32
-#         at: $TKeys + header.keylen
-#     - keys:
-#         type: list
-#         range: nkeys
+TKeys:
+  doc: A "pseudoclass" for a header TKey followed by a list of TKeys.
+  properties:
+    - header: TKey
+    # - nkeys:
+    #     type: int32
+    #     at: $TKeys + header.keylen
+    # - keys: {array: TKey, size: nkeys}
 
-# TKey:
-#   properties:
-#     - bytes: int32
-#     - version: int16
-#     - objlen: int32
-#     - datetime: int32
-#     - keylen: int16
-#     - cycle: int16
-#     - if:
-#         - case: version > 1000
-#           then:
-#             - seekkey: int64
-#             - seekpdir: int64
-#         - else:
-#             - seekkey: int32
-#             - seekpdir: int32
-#     - classname: string
-#     - name: string
-#     - title: string
+TKey:
+  properties:
+    - bytes: int32
+    - version: int16
+    - objlen: int32
+    - datetime: int32
+    - keylen: int16
+    - cycle: int16
+    - if:
+        - case: version > 1000
+          then:
+            - seekkey: int64
+            - seekpdir: int64
+        - else:
+            - seekkey: int32
+            - seekpdir: int32
+    - classname: string
+    - name: string
+    - title: string
