@@ -101,14 +101,20 @@ After = namedtuple("After", ["base", "end"])
 AfterSize = namedtuple("After", ["base", "end", "type"])
 Split = namedtuple("Split", ["predicates"])
 Init = namedtuple("Init", ["base", "pos"])
+Array = namedtuple("Array", ["size", "type"])
 
-def reader(format):
-    if isinstance(format, dict) and len(format) == 1 and list(format.keys())[0] == "string":
-        bytes = list(format.values())[0]
+def interprettype(format):
+    if isinstance(format, dict) and set(format.keys()) == set(["string"]):
+        bytes = format["string"]
         assert isinstance(bytes, int)
         return FixedWidth(repr(bytes) + "s")
+
+    elif isinstance(format, dict) and set(format.keys()) == set(["array", "size"]):
+        return Array(format["size"], interprettype(format["array"]))
+
     elif format in readers:
         return readers[format]
+
     else:
         return format
 
@@ -148,9 +154,9 @@ def expandifs(spec, base, offset, inits):
                 init.append((predicate, thisafter))
             
             if itemindex + 1 != len(spec):
+                inits.append(Init(base + 1, init))
                 base += 1
                 offset = 0
-                inits.append(Init(base, init))
 
         else:
             (name, format), = item.items()
@@ -161,16 +167,20 @@ def expandifs(spec, base, offset, inits):
                 jumpto = format.get("at", None)
                 format = format["type"]
 
-            r = reader(format)
+            reader = interprettype(format)
             if jumpto is None:
-                fields[name] = Where(base, offset, r)
+                fields[name] = Where(base, offset, reader)
             else:
-                fields[name] = Jumpto(jumpto, r)
+                fields[name] = Jumpto(jumpto, reader)
 
-            if hasattr(r, "size"):
-                offset += r.size
+            if isinstance(reader, Array):
+                inits.append(Init(base + 1, AfterSize(base, offset, reader)))
+
+            elif hasattr(reader, "size"):
+                offset += reader.size
+
             elif itemindex + 1 != len(spec):
-                inits.append(Init(base + 1, AfterSize(base, offset, r)))
+                inits.append(Init(base + 1, AfterSize(base, offset, reader)))
                 base += 1
                 offset = 0
 
@@ -188,7 +198,7 @@ def prependself(expr):
     else:
         return expr
 
-def pythonpredicate(expr):
+def pythonexpr(expr):
     return prependself(ast.parse(expr).body[0].value)
 
 def addtoreaders(reader, readers):
@@ -207,8 +217,24 @@ def pythoninit(inits):
     readers = {}
     def setbase(init):
         if isinstance(init.pos, AfterSize):
-            rn = addtoreaders(init.pos.type, readers)
-            return ast.parse("self._base{0} = self._base{1} + {2} + {3}._sizeof(self._file, self._base{1} + {2})".format(init.base, init.pos.base, init.pos.end, rn)).body[0]
+            if isinstance(init.pos.type, Array) and isinstance(init.pos.type.type, FixedWidth):
+                rn = addtoreaders(init.pos.type.type, readers)
+                out = ast.parse("self._base{0} = self._base{1} + {2} + {3}.size * REPLACEME".format(init.base, init.pos.base, init.pos.end, rn)).body
+                out[0].value.right.right = pythonexpr(init.pos.type.size)
+                return out
+
+            elif isinstance(init.pos.type, Array):
+                rn = addtoreaders(init.pos.type.type, readers)
+                out = ast.parse("""
+self._base{0} = self._base{1} + {2}
+for i in range(REPLACEME):
+    self._base{0} += {3}._sizeof(self._file, self._base{0})""".format(init.base, init.pos.base, init.pos.end, rn)).body
+                out[1].iter.args[0] = pythonexpr(init.pos.type.size)
+                return out
+
+            else:
+                rn = addtoreaders(init.pos.type, readers)
+                return ast.parse("self._base{0} = self._base{1} + {2} + {3}._sizeof(self._file, self._base{1} + {2})".format(init.base, init.pos.base, init.pos.end, rn)).body
 
         else:
             out = None
@@ -218,13 +244,14 @@ def pythoninit(inits):
                     out = ast.parse("self._base{0} = self._base{1} + {2}".format(init.base, consequent.base, consequent.end)).body[0]
                 else:
                     tmp = ast.parse("if REPLACEME:\n  self._base{0} = self._base{1} + {2}\nelse:  REPLACEME".format(init.base, consequent.base, consequent.end)).body[0]
-                    tmp.test = pythonpredicate(predicate)
+                    tmp.test = pythonexpr(predicate)
                     tmp.orelse = [out]
                     out = tmp
-            return out
+            return [out]
 
     out = ast.parse("def __init__(self, file, base0, parent=None):\n  Cursor.__init__(self, file, base0, parent)")
-    out.body[0].body.extend([setbase(x) for x in inits])
+    for x in inits:
+        out.body[0].body.extend(setbase(x))
     return out, readers
 
 def pythonprop(prop):
@@ -236,7 +263,7 @@ def pythonprop(prop):
                 return ast.parse("return {0}(self._file, self._base{1} + {2}, self)".format(rn, prop.base, prop.offset)).body[0]
             elif isinstance(prop, Jumpto):
                 out = ast.parse("return {0}(self._file, REPLACEME, self)".format(rn)).body[0]
-                out.value.args[1] = prependself(ast.parse(prop.expr).body[0].value)
+                out.value.args[1] = pythonexpr(prop.expr)
                 return out
 
         elif isinstance(prop, Split):
@@ -247,7 +274,7 @@ def pythonprop(prop):
                     out = recurse(consequent)
                 else:
                     tmp = ast.parse("if REPLACEME:\n  REPLACEME\nelse:\n  REPLACEME").body[0]
-                    tmp.test = pythonpredicate(predicate)
+                    tmp.test = pythonexpr(predicate)
                     tmp.body = [recurse(consequent)]
                     tmp.orelse = [out]
                     out = tmp
@@ -265,6 +292,9 @@ class Cursor(object):
 
     def __repr__(self):
         return "<{0} in {1} at {2}>".format(self.__class__.__name__, repr(self._file.filename), self._base0)
+
+    def base(self):
+        return self._base0
 
     @classmethod
     def _sizeof(cls, file, pos):
@@ -357,7 +387,8 @@ print "tdirectory.seekdir", tdirectory.seekdir
 print "tdirectory.seekparent", tdirectory.seekparent
 print "tdirectory.seekkeys", tdirectory.seekkeys
 
-header = tdirectory.keys.header
+keys = tdirectory.keys
+header = keys.header
 print "header.bytes", header.bytes
 print "header.version", header.version
 print "header.objlen", header.objlen
@@ -369,3 +400,5 @@ print "header.seekpdir", header.seekpdir
 print "header.classname", repr(header.classname)
 print "header.name", repr(header.name)
 print "header.title", repr(header.title)
+
+print "keys.nkeys", keys.nkeys

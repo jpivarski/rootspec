@@ -74,9 +74,9 @@ TKeys:
   doc: A "pseudoclass" for a header TKey followed by a list of TKeys.
   properties:
     - header: TKey
-    # - nkeys:
-    #     type: int32
-    #     at: TKeys + header.keylen
+    - nkeys:
+        type: int32
+        at: base() + header.keylen
     # - keys: {array: TKey, size: nkeys}
 
 TKey:
