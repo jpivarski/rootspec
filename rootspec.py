@@ -36,7 +36,7 @@ class FixedWidth(struct.Struct):
     def __repr__(self):
         return "FixedWidth({0})".format(repr(self.format))
 
-    def __call__(self, file, index):
+    def __call__(self, file, index, parent=None):
         return self.unpack(file[index:index + self.size])[0]
     
 class PascalString(object):
@@ -46,7 +46,7 @@ class PascalString(object):
     readlittle = struct.Struct("B")
     readbig = struct.Struct(">I")
 
-    def __call__(self, file, index):
+    def __call__(self, file, index, parent=None):
         size, = self.readlittle.unpack(file[index:index + 1])
         start = index + 1
         if size == 255:
@@ -67,7 +67,7 @@ class CString(object):
     def __repr__(self):
         return "CString()"
 
-    def __call__(self, file, index):
+    def __call__(self, file, index, parent=None):
         end = index
         while file[end] != 0:
             end += 1
@@ -223,7 +223,7 @@ def pythoninit(inits):
                     out = tmp
             return out
 
-    out = ast.parse("def __init__(self, file, base0):\n  Cursor.__init__(self, file, base0)")
+    out = ast.parse("def __init__(self, file, base0, parent=None):\n  Cursor.__init__(self, file, base0, parent)")
     out.body[0].body.extend([setbase(x) for x in inits])
     return out, readers
 
@@ -233,9 +233,9 @@ def pythonprop(prop):
         if isinstance(prop, (Where, Jumpto)):
             rn = addtoreaders(prop.reader, readers)
             if isinstance(prop, Where):
-                return ast.parse("return {0}(self._file, self._base{1} + {2})".format(rn, prop.base, prop.offset)).body[0]
+                return ast.parse("return {0}(self._file, self._base{1} + {2}, self)".format(rn, prop.base, prop.offset)).body[0]
             elif isinstance(prop, Jumpto):
-                out = ast.parse("return {0}(self._file, REPLACEME)".format(rn)).body[0]
+                out = ast.parse("return {0}(self._file, REPLACEME, self)".format(rn)).body[0]
                 out.value.args[1] = prependself(ast.parse(prop.expr).body[0].value)
                 return out
 
@@ -258,9 +258,10 @@ def pythonprop(prop):
     return out, readers
 
 class Cursor(object):
-    def __init__(self, file, base0):
+    def __init__(self, file, base0, parent=None):
         self._file = file
         self._base0 = base0
+        self._parent = parent
 
     def __repr__(self):
         return "<{0} in {1} at {2}>".format(self.__class__.__name__, repr(self._file.filename), self._base0)
@@ -355,8 +356,6 @@ print "tdirectory.nbytesname", tdirectory.nbytesname
 print "tdirectory.seekdir", tdirectory.seekdir
 print "tdirectory.seekparent", tdirectory.seekparent
 print "tdirectory.seekkeys", tdirectory.seekkeys
-
-print classes["TKey"]._debug()
 
 header = tdirectory.keys.header
 print "header.bytes", header.bytes

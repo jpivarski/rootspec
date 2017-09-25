@@ -76,7 +76,7 @@ TKeys:
     - header: TKey
     # - nkeys:
     #     type: int32
-    #     at: $TKeys + header.keylen
+    #     at: TKeys + header.keylen
     # - keys: {array: TKey, size: nkeys}
 
 TKey:
