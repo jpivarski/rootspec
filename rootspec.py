@@ -101,41 +101,6 @@ def reader(format):
     else:
         raise RootSpecError("unrecognized format: {0}".format(format))
 
-def predicate(expr):
-    def prependself(expr):
-        if isinstance(expr, ast.Name):
-            return ast.Attribute(ast.Name("self", ast.Load()), expr.id, ast.Load())
-        elif isinstance(expr, ast.AST):
-            for field in expr._field:
-                setattr(expr, field, prependself(getattr(expr, field)))
-            return expr
-        elif isinstance(expr, list):
-            return [prependself(x) for x in expr]
-        else:
-            return expr
-    return prependself(ast.parse(expr).body[0].value)
-
-# class Where(object):
-#     def __init__(self, basenum, offset):
-#         self.basenum = basenum
-#         self.offset = offset
-
-# class Case(object):
-#     def __init__(self, predicate, consequent):
-#         self.predicate = predicate
-#         self.consequent = consequent
-
-def propfunction(name, conditions):
-    return compile(ast.parse("""
-def {0}(self):
-    return reader.read(self._file, self._base{1} + {2})
-""".format(name, conditions.basenum, conditions.offset)), "<auto>", "exec")
-
-class ObjectInFile(object):
-    def __init__(self, file, base0):
-        self._file = file
-        self._base0 = base0
-
 Where = namedtuple("Where", ["base", "start", "end", "reader"])
 After = namedtuple("After", ["base", "end"])
 Split = namedtuple("Split", ["predicates"])
@@ -189,15 +154,49 @@ def expandifs(spec, base, offset, inits):
 
     return fields, After(base, offset)
 
+def pythonpredicate(expr):
+    def prependself(expr):
+        if isinstance(expr, ast.Name):
+            return ast.Attribute(ast.Name("self", ast.Load()), expr.id, ast.Load())
+        elif isinstance(expr, ast.AST):
+            for field in expr._fields:
+                setattr(expr, field, prependself(getattr(expr, field)))
+            return expr
+        elif isinstance(expr, list):
+            return [prependself(x) for x in expr]
+        else:
+            return expr
+    return prependself(ast.parse(expr).body[0].value)
+
+def setbase(init):
+    out = None
+    for predicate, consequent in reversed(init.predicates):
+        if predicate is None:
+            assert out is None
+            out = ast.parse("self.base{0} = self.base{1} + {2}".format(init.base, consequent.base, consequent.end)).body[0]
+        else:
+            tmp = ast.parse("if REPLACEME:\n  self.base{0} = self.base{1} + {2}\nelse:  REPLACEME".format(init.base, consequent.base, consequent.end)).body[0]
+            tmp.test = pythonpredicate(predicate)
+            tmp.orelse = [out]
+            out = tmp
+    return out
+
+class ObjectInFile(object):
+    def __init__(self, file, base0):
+        self._file = file
+        self._base0 = base0
+
+import meta
+
 specification = yaml.load(open("specification.yaml"))
 
 inits= []
 fields, after = expandifs(specification["TFile"]["properties"], 0, 0, inits)
 
-for name, spec in fields.items():
-    print name, spec
+# for name, spec in fields.items():
+#     print name, spec
 
-print inits
+print meta.dump_python_source(setbase(inits[0]))
 
 
             
