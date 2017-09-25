@@ -22,8 +22,6 @@ TFile:
     - magic: {string: 4}
     - version: int32
     - begin: int32
-
-Ignore:
     - if:
         - case: version < 1000000  # small file
           then:
@@ -47,6 +45,8 @@ Ignore:
             - seekinfo: int64
             - nbytesinfo: int32
     - uuid: {string: 18}
+
+Ignore:
     - dir:
         class: TDirectory
         seek: begin + nbytesname

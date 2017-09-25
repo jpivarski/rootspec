@@ -19,6 +19,7 @@ import re
 import struct
 import numpy
 import yaml
+from collections import namedtuple
 
 from zlib import decompress as zlib_decompress
 try:
@@ -30,10 +31,16 @@ from lz4.block import decompress as lz4_decompress
 class RootSpecError(Exception): pass
 
 class FixedWidth(struct.Struct):
+    def __repr__(self):
+        return "FixedWidth({0})".format(repr(self.format))
+
     def read(self, file, index):
         return self.unpack(file[index:index + self.size])[0]
 
 class PascalString(object):
+    def __repr__(self):
+        return "PascalString()"
+
     readlittle = struct.Struct("B")
     readbig = struct.Struct(">I")
 
@@ -54,6 +61,9 @@ class PascalString(object):
             return size + 5
 
 class CString(object):
+    def __repr__(self):
+        return "CString()"
+
     def read(self, file, index):
         end = index
         while file[end] != 0:
@@ -105,11 +115,16 @@ def predicate(expr):
             return expr
     return prependself(ast.parse(expr).body[0].value)
 
-class Where(object):
-    def __init__(self, basenum, offset):
-        self.basenum = basenum
-        self.offset = offset
-    
+# class Where(object):
+#     def __init__(self, basenum, offset):
+#         self.basenum = basenum
+#         self.offset = offset
+
+# class Case(object):
+#     def __init__(self, predicate, consequent):
+#         self.predicate = predicate
+#         self.consequent = consequent
+
 def propfunction(name, conditions):
     return compile(ast.parse("""
 def {0}(self):
@@ -121,35 +136,101 @@ class ObjectInFile(object):
         self._file = file
         self._base0 = base0
 
-def declare(spec, conditions):
-    if isinstance(spec, list):
-        properties = {}
-        for s in spec:
-            properties.update(declare(s, conditions))
-        return properties
+Where = namedtuple("Where", ["base", "start", "end", "reader"])
+After = namedtuple("After", ["base", "end"])
+Split = namedtuple("Split", ["predicates"])
+Init = namedtuple("Init", ["base", "predicates"])
 
-    elif isinstance(spec, dict) and len(spec) == 1:
-        (name, s), = spec.items()
-        r = reader(s)
-        variables = {"reader": r}
-        exec(propfunction(name, conditions), variables)
-        conditions.offset += r.size
-        return {name: property(variables[name])}
+def expandifs(spec, base, offset, inits):
+    assert isinstance(spec, list)
+    fields = {}
+    for item in spec:
+        if set(item.keys()) == set(["if"]):
+            assert isinstance(item["if"], list)
 
-    else:
-        raise Exception
+            predicates = []
+            names = set()
+            init = []
+            for case in item["if"]:
+                if set(case.keys()) == set(["case", "then"]):
+                    predicate = case["case"]
+                    consequent = case["then"]
+                elif set(case.keys()) == set(["else"]):
+                    predicate = None
+                    consequent = case["else"]
+                else:
+                    raise AssertionError
 
-def declareclass(name, specification):
-    return type(name, (ObjectInFile,), declare(specification[name]["properties"], Where(0, 0)))
+                thisfields, thisafter = expandifs(consequent, base, offset, inits)
+
+                for name in thisfields:
+                    if name not in fields:
+                        fields[name] = Split([(p, None) for p in predicates])
+                    fields[name].predicates.append((predicate, thisfields[name]))
+
+                for name in names:
+                    if name not in thisfields:
+                        fields[name].predicates.append((predicate, None))
+
+                predicates.append(predicate)
+                names.update(thisfields)
+                init.append((predicate, thisafter))
+            
+            base += 1
+            offset = 0
+            inits.append(Init(base, init))
+
+        else:
+            (name, format), = item.items()
+            assert name not in fields
+            r = reader(format)
+            fields[name] = Where(base, offset, offset + r.size, r)
+            offset += r.size
+
+    return fields, After(base, offset)
 
 specification = yaml.load(open("specification.yaml"))
 
-TFile = declareclass("TFile", specification)
+inits= []
+fields, after = expandifs(specification["TFile"]["properties"], 0, 0, inits)
 
-file = numpy.memmap("/home/pivarski/storage/data/TrackResonanceNtuple_uncompressed.root", dtype=numpy.uint8, mode="r")
+for name, spec in fields.items():
+    print name, spec
 
-tfile = TFile(file, 0)
+print inits
 
-print tfile.magic
-print tfile.version
-print tfile.begin
+
+            
+# def declare(spec, conditions):
+#     if isinstance(spec, list):
+#         properties = {}
+#         for s in spec:
+#             properties.update(declare(s, conditions))
+#         return properties
+
+#     elif isinstance(spec, dict) and len(spec) == 1 and list(spec.keys())[0] == "if":
+        
+#     elif isinstance(spec, dict) and len(spec) == 1:
+#         (name, s), = spec.items()
+#         r = reader(s)
+#         variables = {"reader": r}
+#         exec(propfunction(name, conditions), variables)
+#         conditions.offset += r.size
+#         return {name: property(variables[name])}
+
+#     else:
+#         raise Exception
+
+# def declareclass(name, specification):
+#     return type(name, (ObjectInFile,), declare(specification[name]["properties"], Where(0, 0)))
+
+
+# TFile = declareclass("TFile", specification)
+
+# file = numpy.memmap("/home/pivarski/storage/data/TrackResonanceNtuple_uncompressed.root", dtype=numpy.uint8, mode="r")
+
+# tfile = TFile(file, 0)
+
+# print tfile.magic
+# print tfile.version
+# print tfile.begin
