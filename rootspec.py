@@ -27,47 +27,124 @@ except ImportError:
     from backports.lzma import decompress as lzma_decompress
 from lz4.block import decompress as lz4_decompress
 
-class Instance(object):
-    def __init__(self, file, *pos):
-        self.file = file
-        self._pos = pos
+class RootSpecError(Exception): pass
 
-def bigendian(format):
-    if format.startswith(">") or format.startswith("<") or format.startswith("!") or format.startswith("="):
-        return format
-    else:
-        return ">" + format
+class FixedWidth(struct.Struct):
+    def read(self, file, index):
+        return self.unpack(file[index:index + self.size])[0]
 
-def declaresimple(posindex, offset, pspecdata):
-    format = bigendian(pspecdata)
-    size = struct.calcsize(format)
-    def prop(self):
-        start = self._pos[posindex] + offset
-        end = start + size
-        print "start", start, "end", end, "data", " ".join("%02x" % x for x in self.file[start:end]), "format", format, "property", struct.unpack(format, self.file[start:end])
-        return struct.unpack(format, self.file[start:end])[0]
-    return property(prop), size
+class PascalString(object):
+    readlittle = struct.Struct("B")
+    readbig = struct.Struct(">I")
 
-def declare(spec):
-    properties = {}
-    posindex = 0
-    offset = 0
-    for pspec in spec["properties"]:
-        assert isinstance(pspec, dict) and len(pspec) == 1
-        (name, pspecdata), = pspec.items()
+    def read(self, file, index):
+        size, = self.readlittle(file[index:index + 1])
+        start = index + 1
+        if size == 255:
+            size, = self.readbig(file[index + 1:index + 5])
+            start = index + 5
+        return file[start:start + size].tostring()
 
-        if isinstance(pspecdata, str):
-            properties[name], size = declaresimple(posindex, offset, pspecdata)
+    def size(self, file, index):
+        size, = self.readlittle(file[index:index + 1])
+        if size < 255:
+            return size + 1
         else:
-            break
+            size, = self.readbig(file[index + 1:index + 5])
+            return size + 5
 
-        offset += size
+class CString(object):
+    def read(self, file, index):
+        end = index
+        while file[end] != 0:
+            end += 1
+        return self.data[index:end].tostring()
 
-    return properties
+    def size(self, file, index):
+        end = index
+        while file[end] != 0:
+            end += 1
+        return end + 1 - index
+
+readers = {
+    "bool": FixedWidth("?"),
+    "int8": FixedWidth("b"),
+    "uint8": FixedWidth("B"),
+    "int16": FixedWidth(">h"),
+    "uint16": FixedWidth(">H"),
+    "int32": FixedWidth(">i"),
+    "uint32": FixedWidth(">I"),
+    "int64": FixedWidth(">q"),
+    "uint64": FixedWidth(">Q"),
+    "float32": FixedWidth(">f"),
+    "float64": FixedWidth(">d"),
+    "string": PascalString,
+    "cstring": CString}
+
+def reader(format):
+    if isinstance(format, dict) and len(format) == 1 and list(format.keys())[0] == "string":
+        bytes = list(format.values())[0]
+        assert isinstance(bytes, int)
+        return FixedWidth(repr(bytes) + "s")
+    elif format in readers:
+        return readers[format]
+    else:
+        raise RootSpecError("unrecognized format: {0}".format(format))
+
+def predicate(expr):
+    def prependself(expr):
+        if isinstance(expr, ast.Name):
+            return ast.Attribute(ast.Name("self", ast.Load()), expr.id, ast.Load())
+        elif isinstance(expr, ast.AST):
+            for field in expr._field:
+                setattr(expr, field, prependself(getattr(expr, field)))
+            return expr
+        elif isinstance(expr, list):
+            return [prependself(x) for x in expr]
+        else:
+            return expr
+    return prependself(ast.parse(expr).body[0].value)
+
+class Where(object):
+    def __init__(self, basenum, offset):
+        self.basenum = basenum
+        self.offset = offset
+    
+def propfunction(name, conditions):
+    return compile(ast.parse("""
+def {0}(self):
+    return reader.read(self._file, self._base{1} + {2})
+""".format(name, conditions.basenum, conditions.offset)), "<auto>", "exec")
+
+class ObjectInFile(object):
+    def __init__(self, file, base0):
+        self._file = file
+        self._base0 = base0
+
+def declare(spec, conditions):
+    if isinstance(spec, list):
+        properties = {}
+        for s in spec:
+            properties.update(declare(s, conditions))
+        return properties
+
+    elif isinstance(spec, dict) and len(spec) == 1:
+        (name, s), = spec.items()
+        r = reader(s)
+        variables = {"reader": r}
+        exec(propfunction(name, conditions), variables)
+        conditions.offset += r.size
+        return {name: property(variables[name])}
+
+    else:
+        raise Exception
+
+def declareclass(name, specification):
+    return type(name, (ObjectInFile,), declare(specification[name]["properties"], Where(0, 0)))
 
 specification = yaml.load(open("specification.yaml"))
 
-TFile = type("TFile", (Instance,), declare(specification["TFile"]))
+TFile = declareclass("TFile", specification)
 
 file = numpy.memmap("/home/pivarski/storage/data/TrackResonanceNtuple_uncompressed.root", dtype=numpy.uint8, mode="r")
 

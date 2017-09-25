@@ -14,62 +14,60 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-version: 6.10
-
-class: TFile
-
 TFile:
   doc: Entry point for a ROOT file.
   assert:
     - magic == "root"
   properties:
-    - magic: 4s
-    - version: i
-    - begin: i
+    - magic: {string: 4}
+    - version: int32
+    - begin: int32
+
+Ignore:
     - if:
         - case: version < 1000000  # small file
           then:
-            - end: i
-            - seekfree: i
-            - nbytesfree: i
-            - nfree: i
-            - nbytesname: i
-            - units: B
-            - compression: i
-            - seekinfo: i
-            - nbytesinfo: i
+            - end: int32
+            - seekfree: int32
+            - nbytesfree: int32
+            - nfree: int32
+            - nbytesname: int32
+            - units: uint8
+            - compression: int32
+            - seekinfo: int32
+            - nbytesinfo: int32
         - else:                    # big file
-            - end: q
-            - seekfree: q
-            - nbytesfree: i
-            - nfree: i
-            - nbytesname: i
-            - units: B
-            - compression: i
-            - seekinfo: q
-            - nbytesinfo: i
-    - uuid: 18s
+            - end: int64
+            - seekfree: int64
+            - nbytesfree: int32
+            - nfree: int32
+            - nbytesname: int32
+            - units: uint8
+            - compression: int32
+            - seekinfo: int64
+            - nbytesinfo: int32
+    - uuid: {string: 18}
     - dir:
         class: TDirectory
         seek: begin + nbytesname
 
 TDirectory:
   properties:
-    - version: h
-    - ctime: I
-    - mtime: I
-    - nbyteskeys: i
-    - nbytesname: i
+    - version: int16
+    - ctime: int32
+    - mtime: int32
+    - nbyteskeys: int32
+    - nbytesname: int32
     - if:
         - case: version <= 1000
           then:
-            - seekdir: i
-            - seekparent: i
-            - seekkeys: i
+            - seekdir: int32
+            - seekparent: int32
+            - seekkeys: int32
         - else:
-            - seekdir: q
-            - seekparent: q
-            - seekkeys: q
+            - seekdir: int64
+            - seekparent: int64
+            - seekkeys: int64
     - keys:
         class: TKeys
         seek: seekkeys
@@ -80,7 +78,7 @@ TKeys:
     - header:
         class: TKey
     - nkeys:
-        type: i
+        type: int32
         seek: $TKeys + header.keylen
     - keys:
         type: list
@@ -88,20 +86,20 @@ TKeys:
 
 TKey:
   properties:
-    - bytes: i
-    - version: h
-    - objlen: i
-    - datetime: I
-    - keylen: h
-    - cycle: h
+    - bytes: int32
+    - version: int16
+    - objlen: int32
+    - datetime: int32
+    - keylen: int16
+    - cycle: int16
     - if:
         - case: version > 1000
           then:
-            - seekkey: q
-            - seekpdir: q
+            - seekkey: int64
+            - seekpdir: int64
         - else:
-            - seekkey: i
-            - seekpdir: i
+            - seekkey: int32
+            - seekpdir: int32
     - classname: string
     - name: string
     - title: string
