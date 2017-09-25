@@ -157,6 +157,8 @@ def expandifs(spec, base, offset, inits):
                 inits.append(Init(base + 1, init))
                 base += 1
                 offset = 0
+            else:
+                inits.append(Init("END", init))
 
         else:
             (name, format), = item.items()
@@ -183,6 +185,9 @@ def expandifs(spec, base, offset, inits):
                 inits.append(Init(base + 1, AfterSize(base, offset, reader)))
                 base += 1
                 offset = 0
+
+            else:
+                inits.append(Init("END", AfterSize(base, offset, reader)))
 
     return fields, After(base, offset)
 
@@ -258,13 +263,37 @@ def pythonprop(prop):
     readers = {}
     def recurse(prop):
         if isinstance(prop, (Where, Jumpto)):
-            rn = addtoreaders(prop.reader, readers)
             if isinstance(prop, Where):
-                return ast.parse("return {0}(self._file, self._base{1} + {2}, self)".format(rn, prop.base, prop.offset)).body[0]
+                start = ast.parse("offset = self._base{0} + {1}".format(prop.base, prop.offset)).body
             elif isinstance(prop, Jumpto):
-                out = ast.parse("return {0}(self._file, REPLACEME, self)".format(rn)).body[0]
-                out.value.args[1] = pythonexpr(prop.expr)
-                return out
+                start = ast.parse("offset = REPLACEME").body
+                start[0].value = pythonexpr(prop.expr)
+            else:
+                raise AssertionError
+
+            if isinstance(prop.reader, Array):
+                rn = addtoreaders(prop.reader.type, readers)
+                sizer = ast.parse("size = REPLACEME").body
+                sizer[0].value = pythonexpr(prop.reader.size)
+                filler = ast.parse("""
+out = [None] * size
+i = 0
+while i < size:
+    out[i] = {0}(self._file, offset, self)
+    # offset = out[i]._end
+""".format(rn)).body
+                return start + sizer + filler
+
+            else:
+                rn = addtoreaders(prop.reader, readers)
+                return start + ast.parse("return {0}(self._file, offset, self)".format(rn)).body
+
+            # if isinstance(prop, Where):
+            #     out = ast.parse("return {0}(self._file, self._base{1} + {2}, self)".format(rn, prop.base, prop.offset)).body[0]
+            # elif isinstance(prop, Jumpto):
+            #     out = ast.parse("return {0}(self._file, REPLACEME, self)".format(rn)).body[0]
+            #     out.value.args[1] = pythonexpr(prop.expr)
+            #     return out
 
         elif isinstance(prop, Split):
             out = None
@@ -273,15 +302,15 @@ def pythonprop(prop):
                     assert out is None
                     out = recurse(consequent)
                 else:
-                    tmp = ast.parse("if REPLACEME:\n  REPLACEME\nelse:\n  REPLACEME").body[0]
-                    tmp.test = pythonexpr(predicate)
-                    tmp.body = [recurse(consequent)]
-                    tmp.orelse = [out]
+                    tmp = ast.parse("if REPLACEME:\n  REPLACEME\nelse:\n  REPLACEME").body
+                    tmp[0].test = pythonexpr(predicate)
+                    tmp[0].body = recurse(consequent)
+                    tmp[0].orelse = out
                     out = tmp
             return out
 
     out = ast.parse("def PROPERTY(self):\n  REPLACEME")
-    out.body[0].body = [recurse(prop)]
+    out.body[0].body = recurse(prop)
     return out, readers
 
 class Cursor(object):
@@ -298,7 +327,7 @@ class Cursor(object):
 
     @classmethod
     def _sizeof(cls, file, pos):
-        return 0
+        return self._baseEND - self._base0
 
     @classmethod
     def _debug(cls, method=None):
@@ -377,6 +406,8 @@ print "tfile.seekinfo", tfile.seekinfo
 print "tfile.nbytesinfo", tfile.nbytesinfo
 print "tfile.uuid", repr(tfile.uuid)
 
+print classes["TDirectory"]._debug()
+
 tdirectory = tfile.dir
 print "tdirectory.version", tdirectory.version
 print "tdirectory.ctime", tdirectory.ctime
@@ -402,3 +433,4 @@ print "header.name", repr(header.name)
 print "header.title", repr(header.title)
 
 print "keys.nkeys", keys.nkeys
+# print "keys.keys", keys.keys
