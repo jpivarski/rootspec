@@ -97,8 +97,8 @@ readers = {
 
 Where = namedtuple("Where", ["base", "offset", "reader"])
 Jumpto = namedtuple("Jumpto", ["expr", "reader"])
-After = namedtuple("After", ["base", "end"])
-AfterSize = namedtuple("After", ["base", "end", "type"])
+After = namedtuple("After", ["seek"])
+AfterSize = namedtuple("After", ["seek", "type"])
 Split = namedtuple("Split", ["predicates"])
 Init = namedtuple("Init", ["base", "pos"])
 Array = namedtuple("Array", ["size", "type"])
@@ -138,7 +138,7 @@ def expandifs(spec, base, offset, inits):
                 else:
                     raise AssertionError
 
-                thisfields, thisafter = expandifs(consequent, base, offset, inits)
+                thisfields, thisafter, _ = expandifs(consequent, base, offset, inits)
 
                 for name in thisfields:
                     if name not in fields:
@@ -153,12 +153,12 @@ def expandifs(spec, base, offset, inits):
                 names.update(thisfields)
                 init.append((predicate, thisafter))
             
-            if itemindex + 1 != len(spec):
+            if itemindex + 1 < len(spec):
                 inits.append(Init(base + 1, init))
                 base += 1
                 offset = 0
             else:
-                inits.append(Init("END", init))
+                lastinit = Init("END", init)
 
         else:
             (name, format), = item.items()
@@ -176,20 +176,27 @@ def expandifs(spec, base, offset, inits):
                 fields[name] = Jumpto(jumpto, reader)
 
             if isinstance(reader, Array):
-                inits.append(Init(base + 1, AfterSize(base, offset, reader)))
+                if itemindex + 1 < len(spec):
+                    inits.append(Init(base + 1, AfterSize("_base{0} + {1}".format(base, offset), reader)))
+                    base += 1
+                    offset = 0
+                else:
+                    lastinit = Init("END", AfterSize("_base{0} + {1}".format(base, offset), reader))
 
             elif hasattr(reader, "size"):
                 offset += reader.size
-
-            elif itemindex + 1 != len(spec):
-                inits.append(Init(base + 1, AfterSize(base, offset, reader)))
-                base += 1
-                offset = 0
-
+                if itemindex + 1 == len(spec):
+                    lastinit = Init("END", After("_base{0} + {1}".format(base, offset)))
+                
             else:
-                inits.append(Init("END", AfterSize(base, offset, reader)))
+                if itemindex + 1 < len(spec):
+                    inits.append(Init(base + 1, AfterSize("_base{0} + {1}".format(base, offset), reader)))
+                    base += 1
+                    offset = 0
+                else:
+                    lastinit = Init("END", AfterSize("_base{0} + {1}".format(base, offset), reader))
 
-    return fields, After(base, offset)
+    return fields, After("_base{0} + {1}".format(base, offset)), lastinit
 
 def prependself(expr):
     if isinstance(expr, ast.Name):
@@ -224,39 +231,58 @@ def pythoninit(inits):
         if isinstance(init.pos, AfterSize):
             if isinstance(init.pos.type, Array) and isinstance(init.pos.type.type, FixedWidth):
                 rn = addtoreaders(init.pos.type.type, readers)
-                out = ast.parse("self._base{0} = self._base{1} + {2} + {3}.size * REPLACEME".format(init.base, init.pos.base, init.pos.end, rn)).body
+                out = ast.parse("self._base{0} = REPLACEME + {1}.size * REPLACEME".format(init.base, rn)).body
+                out[0].value.left = pythonexpr(init.pos.seek)
                 out[0].value.right.right = pythonexpr(init.pos.type.size)
                 return out
 
             elif isinstance(init.pos.type, Array):
                 rn = addtoreaders(init.pos.type.type, readers)
                 out = ast.parse("""
-self._base{0} = self._base{1} + {2}
-for i in range(REPLACEME):
-    self._base{0} += {3}._sizeof(self._file, self._base{0})""".format(init.base, init.pos.base, init.pos.end, rn)).body
-                out[1].iter.args[0] = pythonexpr(init.pos.type.size)
+self._base{0} = REPLACEME
+i = 0
+while i < REPLACEME:
+    print i, self._base{0}
+    self._base{0} += {1}._sizeof(self._file, self._base{0})
+    i += 1
+""".format(init.base, rn)).body
+                out[0].value = pythonexpr(init.pos.seek)
+                out[2].test.comparators[0] = pythonexpr(init.pos.type.size)
                 return out
 
             else:
                 rn = addtoreaders(init.pos.type, readers)
-                return ast.parse("self._base{0} = self._base{1} + {2} + {3}._sizeof(self._file, self._base{1} + {2})".format(init.base, init.pos.base, init.pos.end, rn)).body
+                out = ast.parse("self._base{0} = REPLACEME + {1}._sizeof(self._file, REPLACEME)".format(init.base, rn)).body
+                out[0].value.left = pythonexpr(init.pos.seek)
+                out[0].value.right.args[1] = pythonexpr(init.pos.seek)
+                return out
+
+        elif isinstance(init.pos, After):
+            out = ast.parse("self._base{0} = REPLACEME".format(init.base)).body
+            out[0].value = pythonexpr(init.pos.seek)
+            return out
 
         else:
             out = None
             for predicate, consequent in reversed(init.pos):
                 if predicate is None:
                     assert out is None
-                    out = ast.parse("self._base{0} = self._base{1} + {2}".format(init.base, consequent.base, consequent.end)).body[0]
+                    out = setbase(Init(init.base, consequent))
                 else:
-                    tmp = ast.parse("if REPLACEME:\n  self._base{0} = self._base{1} + {2}\nelse:  REPLACEME".format(init.base, consequent.base, consequent.end)).body[0]
-                    tmp.test = pythonexpr(predicate)
-                    tmp.orelse = [out]
+                    tmp = ast.parse("if REPLACEME:\n  REPLACEME\nelse:  REPLACEME").body
+                    tmp[0].test = pythonexpr(predicate)
+                    tmp[0].body = setbase(Init(init.base, consequent))
+                    tmp[0].orelse = out
                     out = tmp
-            return [out]
+            return out
 
     out = ast.parse("def __init__(self, file, base0, parent=None):\n  Cursor.__init__(self, file, base0, parent)")
     for x in inits:
-        out.body[0].body.extend(setbase(x))
+        tmp = setbase(x)
+        import meta
+        print meta.dump_python_source(ast.Module(tmp))
+
+        out.body[0].body.extend(tmp)
     return out, readers
 
 def pythonprop(prop):
@@ -280,20 +306,15 @@ out = [None] * size
 i = 0
 while i < size:
     out[i] = {0}(self._file, offset, self)
-    # offset = out[i]._end
+    offset = out[i]._baseEND
+    i += 1
+return out
 """.format(rn)).body
                 return start + sizer + filler
 
             else:
                 rn = addtoreaders(prop.reader, readers)
                 return start + ast.parse("return {0}(self._file, offset, self)".format(rn)).body
-
-            # if isinstance(prop, Where):
-            #     out = ast.parse("return {0}(self._file, self._base{1} + {2}, self)".format(rn, prop.base, prop.offset)).body[0]
-            # elif isinstance(prop, Jumpto):
-            #     out = ast.parse("return {0}(self._file, REPLACEME, self)".format(rn)).body[0]
-            #     out.value.args[1] = pythonexpr(prop.expr)
-            #     return out
 
         elif isinstance(prop, Split):
             out = None
@@ -318,6 +339,7 @@ class Cursor(object):
         self._file = file
         self._base0 = base0
         self._parent = parent
+        print "start", self.__class__, "at", base0
 
     def __repr__(self):
         return "<{0} in {1} at {2}>".format(self.__class__.__name__, repr(self._file.filename), self._base0)
@@ -327,7 +349,9 @@ class Cursor(object):
 
     @classmethod
     def _sizeof(cls, file, pos):
-        return self._baseEND - self._base0
+        print "_sizeof", cls, pos
+        obj = cls(file, pos)
+        return obj._baseEND - obj._base0
 
     @classmethod
     def _debug(cls, method=None):
@@ -356,12 +380,15 @@ class Cursor(object):
             for method, (source, readers) in cls._source.items():
                 recurse(source, readers)
                 source.body[0].name = method
+                if method != "__init__":
+                    out += "\n    @property"
                 out += meta.dump_python_source(source).replace("\n", "\n    ").rstrip() + "\n"
             return out
 
 def declareclass(classname, spec):
     inits = []
-    fields, after = expandifs(spec["properties"], 0, 0, inits)
+    fields, after, lastinit = expandifs(spec["properties"], 0, 0, inits)
+    inits.append(lastinit)
 
     out = type(classname, (Cursor,), {})
     out._source = OrderedDict([("__init__", pythoninit(inits))])
@@ -391,6 +418,9 @@ def declare(specification):
 classes = declare(yaml.load(open("specification.yaml")))
 
 file = numpy.memmap("/home/pivarski/storage/data/TrackResonanceNtuple_uncompressed.root", dtype=numpy.uint8, mode="r")
+
+print classes["TKeys"]._debug()
+
 tfile = classes["TFile"](file, 0)
 print "tfile.magic", repr(tfile.magic)
 print "tfile.version", tfile.version
@@ -405,8 +435,6 @@ print "tfile.compression", tfile.compression
 print "tfile.seekinfo", tfile.seekinfo
 print "tfile.nbytesinfo", tfile.nbytesinfo
 print "tfile.uuid", repr(tfile.uuid)
-
-print classes["TDirectory"]._debug()
 
 tdirectory = tfile.dir
 print "tdirectory.version", tdirectory.version
@@ -434,3 +462,5 @@ print "header.title", repr(header.title)
 
 print "keys.nkeys", keys.nkeys
 # print "keys.keys", keys.keys
+# >>> classes["TKeys"](file, 12069632)
+# 0 12069708
