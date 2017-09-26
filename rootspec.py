@@ -47,6 +47,9 @@ class FixedWidth(struct.Struct):
     def _sizeof(self, file, index):
         return self.size
 
+    def array(self, file, index, size):
+        return file[index:index + size*self.dtype.itemsize].view(self.dtype)
+
 class Postprocess(object):
     def __init__(self, reader, name, expr):
         self.reader = reader
@@ -110,16 +113,16 @@ class CString(object):
 
 readers = {
     "bool": FixedWidth("?", numpy.dtype(numpy.bool_)),
-    "int8": FixedWidth("b", numpy.dtype(numpy.int8)),
-    "uint8": FixedWidth("B", numpy.dtype(numpy.uint8)),
-    "int16": FixedWidth(">h", numpy.dtype(numpy.int16)),
-    "uint16": FixedWidth(">H", numpy.dtype(numpy.uint16)),
-    "int32": FixedWidth(">i", numpy.dtype(numpy.int32)),
-    "uint32": FixedWidth(">I", numpy.dtype(numpy.uint32)),
-    "int64": FixedWidth(">q", numpy.dtype(numpy.int64)),
-    "uint64": FixedWidth(">Q", numpy.dtype(numpy.uint64)),
-    "float32": FixedWidth(">f", numpy.dtype(numpy.float32)),
-    "float64": FixedWidth(">d", numpy.dtype(numpy.float64)),
+    "int8": FixedWidth("b", numpy.dtype("i1")),
+    "uint8": FixedWidth("B", numpy.dtype("u1")),
+    "int16": FixedWidth(">h", numpy.dtype(">i2")),
+    "uint16": FixedWidth(">H", numpy.dtype(">u2")),
+    "int32": FixedWidth(">i", numpy.dtype(">i4")),
+    "uint32": FixedWidth(">I", numpy.dtype(">u4")),
+    "int64": FixedWidth(">q", numpy.dtype(">i8")),
+    "uint64": FixedWidth(">Q", numpy.dtype(">u8")),
+    "float32": FixedWidth(">f", numpy.dtype(">f4")),
+    "float64": FixedWidth(">d", numpy.dtype(">f8")),
     "string": PascalString(),
     "cstring": CString()}
 
@@ -349,7 +352,11 @@ def pythonprop(classname, name, prop):
                 rn = addtoreaders(prop.reader.type, readers)
                 sizer = ast.parse("size = REPLACEME").body
                 sizer[0].value = pythonexpr(prop.reader.size)
-                filler = ast.parse("""
+
+                if isinstance(prop.reader.type, FixedWidth):
+                    filler = ast.parse("return {0}.array(self._file, offset, size)".format(rn)).body
+                else:
+                    filler = ast.parse("""
 out = [None] * size
 i = 0
 while i < size:
@@ -358,6 +365,7 @@ while i < size:
     i += 1
 return out
 """.format(rn)).body
+
                 return start + sizer + filler
 
             else:
@@ -617,7 +625,7 @@ for key in keys.keys:
 # >>> classes["TKeys"](file, 12069632)
 # 0 12069708
 
-key = keys.keys[0]
+key = keys.keys[1]
 
 print key.hexdump(key.seekkey + key.keylen, format="%3d")
 
@@ -637,3 +645,12 @@ print repr(hist.xaxis.named.name), repr(hist.xaxis.named.title), hist.xaxis.nbin
 
 print repr(hist.yaxis.named.name), repr(hist.yaxis.named.title), hist.yaxis.nbins, hist.yaxis.xmin, hist.yaxis.xmax, hist.yaxis.binedges, hist.yaxis.first, hist.yaxis.last, hist.yaxis.bits2, hist.yaxis.time, repr(hist.yaxis.tfmt)
 
+print repr(hist.zaxis.named.name), repr(hist.zaxis.named.title), hist.zaxis.nbins, hist.zaxis.xmin, hist.zaxis.xmax, hist.zaxis.binedges, hist.zaxis.first, hist.zaxis.last, hist.zaxis.bits2, hist.zaxis.time, repr(hist.zaxis.tfmt)
+
+print hist.versionheader.version
+print hist.entries
+print hist.tsumw, hist.tsumw2, hist.tsumwx, hist.tsumwx2
+print hist.max, hist.min, hist.norm, hist.contour_size, hist.contour
+print hist.sumw2_size, hist.sumw2
+
+print hist.buffer.tolist()

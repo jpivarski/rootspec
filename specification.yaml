@@ -186,7 +186,22 @@ TAxis:
     - labels: uint32
     - modlabs: uint32
 
+TList:
+  assert:
+    - versionheader.version >= 4
+  properties:
+    - versionheader: VersionHeader
+    - version: int16
+    - id: uint32
+    - bits:
+        type: uint32
+        postprocess: uint32(bits) | uint32(0x01000000)
+    - name: string
+    - size: int32
+
 TH1F:
+  assert:
+    - versionheader.bytecount + 4 == $size
   properties:
     - versionheader: VersionHeader
     - named: TNamed
@@ -196,3 +211,33 @@ TH1F:
     - ncells: int32
     - xaxis: TAxis
     - yaxis: TAxis
+    - zaxis: TAxis
+    - boffset: int16
+    - bwidth: int16
+    - entries: float64
+    - tsumw: float64
+    - tsumw2: float64
+    - tsumwx: float64
+    - tsumwx2: float64
+    - if:
+        - case: versionheader.version < 2
+          then:
+            - max: float32
+            - min: float32
+            - norm: float32
+            - contour_size: int32
+            - contour: {array: float64, size: contour_size}
+        - else:
+            - max: float64
+            - min: float64
+            - norm: float64
+            - contour_size: int32
+            - contour: {array: float64, size: contour_size}
+    - sumw2_size: int32
+    - sumw2: {array: float64, size: sumw2_size}
+    - opt: string
+    - funcs: TList
+    - skip1: uint64
+    - skip2: uint32
+    - skip3: uint8
+    - buffer: {array: float32, size: ncells}
