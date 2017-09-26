@@ -172,31 +172,33 @@ def expandifs(spec, base, offset, inits):
             reader = interprettype(format)
             if jumpto is None:
                 fields[name] = Where(base, offset, reader)
+                initseek = "_base{0} + {1}".format(base, offset)
             else:
                 fields[name] = Jumpto(jumpto, reader)
+                initseek = jumpto
 
             if isinstance(reader, Array):
                 if itemindex + 1 < len(spec):
-                    inits.append(Init(base + 1, AfterSize("_base{0} + {1}".format(base, offset), reader)))
+                    inits.append(Init(base + 1, AfterSize(initseek, reader)))
                     base += 1
                     offset = 0
                 else:
-                    lastinit = Init("END", AfterSize("_base{0} + {1}".format(base, offset), reader))
+                    lastinit = Init("END", AfterSize(initseek, reader))
 
             elif hasattr(reader, "size"):
                 offset += reader.size
                 if itemindex + 1 == len(spec):
-                    lastinit = Init("END", After("_base{0} + {1}".format(base, offset)))
+                    lastinit = Init("END", After(initseek))
                 
             else:
                 if itemindex + 1 < len(spec):
-                    inits.append(Init(base + 1, AfterSize("_base{0} + {1}".format(base, offset), reader)))
+                    inits.append(Init(base + 1, AfterSize(initseek, reader)))
                     base += 1
                     offset = 0
                 else:
-                    lastinit = Init("END", AfterSize("_base{0} + {1}".format(base, offset), reader))
+                    lastinit = Init("END", AfterSize(initseek, reader))
 
-    return fields, After("_base{0} + {1}".format(base, offset)), lastinit
+    return fields, After(initseek), lastinit
 
 def prependself(expr):
     if isinstance(expr, ast.Name):
@@ -242,7 +244,6 @@ def pythoninit(inits):
 self._base{0} = REPLACEME
 i = 0
 while i < REPLACEME:
-    print i, self._base{0}
     self._base{0} += {1}._sizeof(self._file, self._base{0})
     i += 1
 """.format(init.base, rn)).body
@@ -278,11 +279,7 @@ while i < REPLACEME:
 
     out = ast.parse("def __init__(self, file, base0, parent=None):\n  Cursor.__init__(self, file, base0, parent)")
     for x in inits:
-        tmp = setbase(x)
-        import meta
-        print meta.dump_python_source(ast.Module(tmp))
-
-        out.body[0].body.extend(tmp)
+        out.body[0].body.extend(setbase(x))
     return out, readers
 
 def pythonprop(prop):
@@ -339,7 +336,6 @@ class Cursor(object):
         self._file = file
         self._base0 = base0
         self._parent = parent
-        print "start", self.__class__, "at", base0
 
     def __repr__(self):
         return "<{0} in {1} at {2}>".format(self.__class__.__name__, repr(self._file.filename), self._base0)
@@ -349,7 +345,6 @@ class Cursor(object):
 
     @classmethod
     def _sizeof(cls, file, pos):
-        print "_sizeof", cls, pos
         obj = cls(file, pos)
         return obj._baseEND - obj._base0
 
@@ -460,7 +455,17 @@ print "header.classname", repr(header.classname)
 print "header.name", repr(header.name)
 print "header.title", repr(header.title)
 
-print "keys.nkeys", keys.nkeys
-# print "keys.keys", keys.keys
-# >>> classes["TKeys"](file, 12069632)
-# 0 12069708
+print "keys.nkeys", keys.nkeys, len(keys.keys)
+
+key = keys.keys[0]
+print "key.bytes", key.bytes
+print "key.version", key.version
+print "key.objlen", key.objlen
+print "key.datetime", key.datetime
+print "key.keylen", key.keylen
+print "key.cycle", key.cycle
+print "key.seekkey", key.seekkey
+print "key.seekpdir", key.seekpdir
+print "key.classname", repr(key.classname)
+print "key.name", repr(key.name)
+print "key.title", repr(key.title)

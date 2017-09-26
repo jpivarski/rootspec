@@ -77,7 +77,7 @@ TKeys:
     - nkeys:
         type: int32
         at: base() + header.keylen
-    # - keys: {array: TKey, size: nkeys}
+    - keys: {array: TKey, size: nkeys}
 
 TKey:
   properties:
