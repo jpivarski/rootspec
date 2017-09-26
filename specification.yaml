@@ -105,9 +105,9 @@ VersionHeader:
   doc: Another "pseudoclass," for handling TBuffer::ReadVersion.
   properties:
     - bytecount:
-        type: int32
-        postprocess: int64(bytecount) & ~int64(0x40000000)
-    - version: int16
+        type: uint32
+        postprocess: uint32(bytecount) & ~uint32(0x40000000)
+    - version: uint16
 
 TNamed:
   properties:
@@ -118,18 +118,81 @@ TNamed:
           then:
             - skip1: int16
             - skip2: int16
-    - id: int32
+    - id: uint32
     - bits:
-        type: int32
-        postprocess: int32(bits) | uint32(0x01000000)
-    - if:
-        - case: bits & uint32(1 << 4)
-          then:
-            - skip3: uint16
+        type: uint32
+        postprocess: uint32(bits) | uint32(0x01000000)
+    - skip3: uint16
     - name: string
     - title: string
+
+TAttLine:
+  assert:
+    - versionheader.bytecount + 4 == $size
+  properties:
+    - versionheader: VersionHeader
+    - color: uint16
+    - style: uint16
+    - width: uint16
+
+TAttFill:
+  assert:
+    - versionheader.bytecount + 4 == $size
+  properties:
+    - versionheader: VersionHeader
+    - color: uint16
+    - style: uint16
+
+TAttMarker:
+  assert:
+    - versionheader.bytecount + 4 == $size
+  properties:
+    - versionheader: VersionHeader
+    - color: uint16
+    - style: uint16
+    - width: float32
+
+TAttAxis:
+  assert:
+    - versionheader.version >= 4
+  properties:
+    - versionheader: VersionHeader
+    - ndivs: int32
+    - acolor: int16
+    - lcolor: int16
+    - lfont: int16
+    - loffset: float32
+    - lsize: float32
+    - ticks: float32
+    - toffset: float32
+    - tsize: float32
+    - tcolor: int16
+    - tfont: int16
+
+TAxis:
+  properties:
+    - named: TNamed
+    - attaxis: TAttAxis
+    - nbins: int32
+    - xmin: float64
+    - xmax: float64
+    - binedges_size: int32
+    - binedges: {array: float64, size: binedges_size}
+    - first: int32
+    - last: int32
+    - bits2: uint16
+    - time: bool
+    - tfmt: string
+    - labels: uint32
+    - modlabs: uint32
 
 TH1F:
   properties:
     - versionheader: VersionHeader
     - named: TNamed
+    - attline: TAttLine
+    - attfill: TAttFill
+    - attmarker: TAttMarker
+    - ncells: int32
+    - xaxis: TAxis
+    - yaxis: TAxis

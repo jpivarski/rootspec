@@ -393,7 +393,7 @@ class Cursor(object):
     def __repr__(self):
         return "<{0} in {1} at {2}>".format(self.__class__.__name__, repr(self._file.filename), self._base0)
 
-    def hexdump(self, at=None, size=160, offset=0):
+    def hexdump(self, at=None, size=160, offset=0, format="%02x"):
         if at is None:
             at = self._base0
         elif isinstance(at, Cursor):
@@ -403,7 +403,7 @@ class Cursor(object):
         out = []
         for linepos in range(pos, pos + size, 16):
             data = self._file[linepos:min(linepos + 16, pos + size)]
-            line = ["%02x" % x for x in data]
+            line = [format % x for x in data]
             text = [chr(x) if chr(x) in string.printable[:-5] else "." for x in data]
             if len(line) < 16:
                 diff = 16 - len(line)
@@ -481,9 +481,84 @@ def declare(specification):
 
 classes = declare(yaml.load(open("specification.yaml")))
 
-file = numpy.memmap("histograms.root", dtype=numpy.uint8, mode="r")
+def deserialize(file, index, origin=None, refs=None):
+    if origin is None:
+        origin = index
+    if refs is None:
+        refs = {}
 
-print classes["TFile"]._debug()
+    beg = index - origin
+    bcnt = readers["uint32"](file, index)
+    index += 4
+
+    if numpy.int64(bcnt) & numpy.int64(0x40000000) == 0 or numpy.int64(bcnt) == numpy.int64(0xFFFFFFFF):
+        vers = 0
+        start = 0
+        tag = bcnt
+        bcnt = 0
+    else:
+        vers = 1
+        start = index - origin
+        tag = readers["uint32"](file, index)
+        index += 4
+
+    if numpy.int64(tag) & numpy.int64(0x80000000) == 0:
+        # reference object
+        if tag == 0:
+            return None, index, refs
+
+        elif tag == 1:
+            raise NotImplementedError("tag == 1 means self; not implemented yet")
+
+        elif tag not in refs:
+            # jump past this object
+            index = origin + beg + bcnt + 4
+            return None, index, refs
+        
+        else:
+            return refs[tag], index, refs
+
+    elif tag == numpy.int64(0xFFFFFFFF):
+        # new class and object
+        cname = readers["cstring"](file, index)
+        index += readers["cstring"]._sizeof(file, index)
+
+        fct = classes[cname]
+
+        if vers > 0:
+            refs[start + 2] = fct
+        else:
+            refs[len(refs) + 1] = fct
+
+        obj = fct(file, index)
+        index = obj._baseEND
+
+        if vers > 0:
+            refs[beg + 2] = obj
+        else:
+            refs[len(refs) + 1] = obj
+
+        return obj, index, refs
+
+    else:
+        # reference class, new object
+        ref = int(numpy.int64(tag) & ~numpy.int64(0x80000000))
+
+        if ref not in refs:
+            raise IOError("invalid class-tag reference")
+
+        fct = refs[ref]
+        obj = fct(file, index)
+        index = obj._baseEND
+
+        if vers > 0:
+            refs[beg + 2] = obj
+        else:
+            refs[len(refs) + 1] = obj
+
+        return obj, index, refs
+
+file = numpy.memmap("histograms.root", dtype=numpy.uint8, mode="r")
 
 tfile = classes["TFile"](file, 0)
 print "tfile.magic", repr(tfile.magic)
@@ -542,7 +617,23 @@ for key in keys.keys:
 # >>> classes["TKeys"](file, 12069632)
 # 0 12069708
 
-hist = classes["TH1F"](key._file, key.seekkey)
+key = keys.keys[0]
+
+print key.hexdump(key.seekkey + key.keylen, format="%3d")
+
+hist = classes["TH1F"](key._file, key.seekkey + key.keylen)
+
 print repr(hist.named.name), repr(hist.named.title)
 
-print hist.hexdump()
+print hist.ncells
+
+print hist.versionheader.bytecount
+print hist.named.versionheader.bytecount
+print hist.attline.versionheader.bytecount
+print hist.attfill.versionheader.bytecount
+print hist.attmarker.versionheader.bytecount
+
+print repr(hist.xaxis.named.name), repr(hist.xaxis.named.title), hist.xaxis.nbins, hist.xaxis.xmin, hist.xaxis.xmax, hist.xaxis.binedges, hist.xaxis.first, hist.xaxis.last, hist.xaxis.bits2, hist.xaxis.time, repr(hist.xaxis.tfmt)
+
+print repr(hist.yaxis.named.name), repr(hist.yaxis.named.title), hist.yaxis.nbins, hist.yaxis.xmin, hist.yaxis.xmax, hist.yaxis.binedges, hist.yaxis.first, hist.yaxis.last, hist.yaxis.bits2, hist.yaxis.time, repr(hist.yaxis.tfmt)
+
