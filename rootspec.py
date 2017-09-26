@@ -188,6 +188,8 @@ def expandifs(spec, base, offset, inits):
             elif hasattr(reader, "size"):
                 offset += reader.size
                 if itemindex + 1 == len(spec):
+                    if jumpto is None:
+                        initseek = "_base{0} + {1}".format(base, offset)
                     lastinit = Init("END", After(initseek))
                 
             else:
@@ -198,7 +200,7 @@ def expandifs(spec, base, offset, inits):
                 else:
                     lastinit = Init("END", AfterSize(initseek, reader))
 
-    return fields, After(initseek), lastinit
+    return fields, After("_base{0} + {1}".format(base, offset)), lastinit
 
 def prependself(expr):
     if isinstance(expr, ast.Name):
@@ -469,3 +471,6 @@ print "key.seekpdir", key.seekpdir
 print "key.classname", repr(key.classname)
 print "key.name", repr(key.name)
 print "key.title", repr(key.title)
+
+# >>> classes["TKeys"](file, 12069632)
+# 0 12069708
