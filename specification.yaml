@@ -76,10 +76,12 @@ TKeys:
     - header: TKey
     - nkeys:
         type: int32
-        at: base() + header.keylen
+        at: $pos + header.keylen
     - keys: {array: TKey, size: nkeys}
 
 TKey:
+  assert:
+    - $size == keylen
   properties:
     - bytes: int32
     - version: int16

@@ -215,7 +215,7 @@ def prependself(expr):
         return expr
 
 def pythonexpr(expr):
-    return prependself(ast.parse(expr).body[0].value)
+    return prependself(ast.parse(re.sub(r"\$size\b", "(_baseEND - _base0)", re.sub(r"\$pos\b", "_base0", expr))).body[0].value)
 
 def addtoreaders(reader, readers):
     if isinstance(reader, str):
@@ -350,9 +350,6 @@ class Cursor(object):
 
     def __repr__(self):
         return "<{0} in {1} at {2}>".format(self.__class__.__name__, repr(self._file.filename), self._base0)
-
-    def base(self):
-        return self._base0
 
     @classmethod
     def _sizeof(cls, file, pos):
