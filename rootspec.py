@@ -420,7 +420,7 @@ def declare(specification):
 
 classes = declare(yaml.load(open("specification.yaml")))
 
-file = numpy.memmap("/home/pivarski/storage/data/TrackResonanceNtuple_uncompressed.root", dtype=numpy.uint8, mode="r")
+file = numpy.memmap("histograms.root", dtype=numpy.uint8, mode="r")
 
 print classes["TFile"]._debug()
 
@@ -465,18 +465,18 @@ print "header.title", repr(header.title)
 
 print "keys.nkeys", keys.nkeys, len(keys.keys)
 
-key = keys.keys[0]
-print "key.bytes", key.bytes
-print "key.version", key.version
-print "key.objlen", key.objlen
-print "key.datetime", key.datetime
-print "key.keylen", key.keylen
-print "key.cycle", key.cycle
-print "key.seekkey", key.seekkey
-print "key.seekpdir", key.seekpdir
-print "key.classname", repr(key.classname)
-print "key.name", repr(key.name)
-print "key.title", repr(key.title)
+for key in keys.keys:
+    print "key.bytes", key.bytes
+    print "key.version", key.version
+    print "key.objlen", key.objlen
+    print "key.datetime", key.datetime
+    print "key.keylen", key.keylen
+    print "key.cycle", key.cycle
+    print "key.seekkey", key.seekkey
+    print "key.seekpdir", key.seekpdir
+    print "key.classname", repr(key.classname)
+    print "key.name", repr(key.name)
+    print "key.title", repr(key.title)
 
 # >>> classes["TKeys"](file, 12069632)
 # 0 12069708
