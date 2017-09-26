@@ -229,7 +229,7 @@ def addtoreaders(reader, readers):
         readers[rn] = reader
         return rn
 
-def pythoninit(inits):
+def pythoninit(inits, asserts):
     readers = {}
     def setbase(init):
         if isinstance(init.pos, AfterSize):
@@ -280,8 +280,17 @@ while i < REPLACEME:
             return out
 
     out = ast.parse("def __init__(self, file, base0, parent=None):\n  Cursor.__init__(self, file, base0, parent)")
+
     for x in inits:
         out.body[0].body.extend(setbase(x))
+
+    assert isinstance(asserts, list)
+    for x in asserts:
+        tmp = ast.parse("assert REPLACEME, 'in {0} starting at index {1} expected {2}'.format(self.__class__.__name__, base0, 'REPLACEME')").body
+        tmp[0].test = pythonexpr(x)
+        tmp[0].msg.args[2].s = x
+        out.body[0].body.extend(tmp)
+
     return out, readers
 
 def pythonprop(prop):
@@ -386,9 +395,9 @@ def declareclass(classname, spec):
     inits = []
     fields, after, lastinit = expandifs(spec["properties"], 0, 0, inits)
     inits.append(lastinit)
-
+    
     out = type(classname, (Cursor,), {})
-    out._source = OrderedDict([("__init__", pythoninit(inits))])
+    out._source = OrderedDict([("__init__", pythoninit(inits, spec.get("assert", [])))])
     for name, prop in fields.items():
         out._source[name] = pythonprop(prop)
     return out
@@ -416,7 +425,7 @@ classes = declare(yaml.load(open("specification.yaml")))
 
 file = numpy.memmap("/home/pivarski/storage/data/TrackResonanceNtuple_uncompressed.root", dtype=numpy.uint8, mode="r")
 
-print classes["TKeys"]._debug()
+print classes["TFile"]._debug()
 
 tfile = classes["TFile"](file, 0)
 print "tfile.magic", repr(tfile.magic)
