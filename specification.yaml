@@ -100,3 +100,36 @@ TKey:
     - classname: string
     - name: string
     - title: string
+
+VersionHeader:
+  doc: Another "pseudoclass," for handling TBuffer::ReadVersion.
+  properties:
+    - bytecount:
+        type: int32
+        postprocess: int64(bytecount) & ~int64(0x40000000)
+    - version: int16
+
+TNamed:
+  properties:
+    - versionheader: VersionHeader
+    - version: int16
+    - if:
+        - case: int64(version) & int64(0x4000)
+          then:
+            - skip1: int16
+            - skip2: int16
+    - id: int32
+    - bits:
+        type: int32
+        postprocess: int32(bits) | uint32(0x01000000)
+    - if:
+        - case: bits & uint32(1 << 4)
+          then:
+            - skip3: uint16
+    - name: string
+    - title: string
+
+TH1F:
+  properties:
+    - versionheader: VersionHeader
+    - named: TNamed
